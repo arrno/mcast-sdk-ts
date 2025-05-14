@@ -1,0 +1,49 @@
+{
+  "name": "mcast-client",
+  "version": "0.1.0",
+  "description": "WebSocket client for Mcast real-time messaging",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "files": ["dist", "src", "README.md"],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts --format cjs,esm --watch",
+    "lint": "tsc --noEmit",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepare": "npm run build",
+    "example": "ts-node src/example.ts",
+    "example:env": "ts-node src/example-with-env.ts"
+  },
+  "keywords": [
+    "websocket",
+    "streaming",
+    "realtime",
+    "messaging",
+    "pubsub"
+  ],
+  "author": {
+    "name": "Aaron Hough",
+    "email": "aaron@multicast.co",
+    "url": "https://multicast.co"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/ws": "^8.18.1",
+    "ts-node": "^10.9.2",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "ws": "^8.18.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arrno/mcast"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
