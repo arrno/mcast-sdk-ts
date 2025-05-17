@@ -27,7 +27,7 @@ async function main() {
         await new Promise((resolve) => setTimeout(resolve, 10000));
 
         // Clean up
-        client.disconnect();
+        await client.disconnect();
         console.log("Disconnected");
     } catch (error) {
         console.error("Error:", error);

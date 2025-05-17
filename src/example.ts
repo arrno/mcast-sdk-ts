@@ -1,4 +1,4 @@
-import { McastClient, ConnectionState } from "./index";
+import { McastClient } from "./index";
 
 async function main() {
     // Initialize the client with your credentials
@@ -52,8 +52,8 @@ async function main() {
     } catch (error) {
         console.error("Error:", error);
     } finally {
-        // Clean up
-        client.disconnect();
+        // Clean up and wait for disconnect to complete
+        await client.disconnect();
         console.log("Disconnected");
     }
 }

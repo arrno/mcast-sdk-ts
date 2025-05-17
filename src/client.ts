@@ -2,7 +2,7 @@ import {
     AccountResponse,
     McastOptions,
     ConnectionState,
-    Message,
+    // Message,
     MessageCallback,
     SerializedMessage,
     StandardResponse,
@@ -56,6 +56,13 @@ export class McastClient {
             connectionType: "publisher" | "subscriber"
         ) => void
     > = [];
+
+    // Connection locks to prevent race conditions
+    private pubConnectPromise: Promise<void> | null = null;
+    private subConnectPromise: Promise<void> | null = null;
+
+    // Disconnect tracking
+    private isDisconnecting: boolean = false;
 
     /**
      * Creates a new instance of the McastClient
@@ -153,82 +160,122 @@ export class McastClient {
      * @returns Promise that resolves when the connection is established
      */
     private async connectPublisher(): Promise<void> {
+        // Return existing connection promise if one is in progress
+        if (this.pubConnectPromise) {
+            return this.pubConnectPromise;
+        }
+
+        // Return immediately if already connected
         if (this.isSocketConnected(this.pubSocket)) {
-            return;
+            return Promise.resolve();
+        }
+
+        // If we're disconnecting, don't try to connect
+        if (this.isDisconnecting) {
+            return Promise.reject(new Error("Client is disconnecting"));
         }
 
         this.updatePublisherState(ConnectionState.CONNECTING);
 
-        // Build the query parameters from headers
-        const queryParams = Object.entries(this.headers)
-            .map(
-                ([key, value]) =>
-                    `${encodeURIComponent(key)}=${encodeURIComponent(value)}`
-            )
-            .join("&");
-
-        // Create the WebSocket connection
-        // Note: The server expects a POST method for WebSocket upgrade
-        // Standard WebSocket creates a GET request, so we need to ensure our URL is precisely what the server expects
-        const url = `${this.getWebSocketBaseUrl()}/pub-ws?channel=${encodeURIComponent(
-            this.channel
-        )}&${queryParams}`;
-
-        // In both browser and Node.js environments, we need to use standard WebSocket initialization
-        // The server has been modified to accept both GET and POST for WebSocket upgrades
-        this.pubSocket = new WebSocketImpl(url);
-
-        // Log connection attempt
-        this.logDebug(`Attempting to connect publisher to ${url}`);
-
-        return new Promise<void>((resolve, reject) => {
-            if (!this.pubSocket) {
-                this.updatePublisherState(ConnectionState.ERROR);
-                reject(new Error("Failed to create publisher WebSocket"));
-                return;
-            }
-
-            // Set up event handlers
-            this.pubSocket.onopen = () => {
-                this.updatePublisherState(ConnectionState.CONNECTED);
-                this.pubReconnectAttempts = 0;
-                this.logDebug("Publisher connected");
-                resolve();
-            };
-
-            this.pubSocket.onclose = (event: any) => {
-                const wasConnected =
-                    this.pubState === ConnectionState.CONNECTED;
-                this.updatePublisherState(ConnectionState.DISCONNECTED);
-                this.logDebug(
-                    `Publisher disconnected: ${event?.code} ${event?.reason}`
-                );
-
-                // Handle reconnection
-                if (wasConnected && this.autoReconnect) {
-                    this.attemptReconnectPublisher();
-                }
-                if (!wasConnected) {
-                    reject(
-                        new Error(
-                            `WebSocket error: ${event?.message || "Denied"}`
-                        )
-                    );
-                }
-            };
-
-            this.pubSocket.onerror = (event: any) => {
-                this.updatePublisherState(ConnectionState.ERROR);
-                this.logDebug(
-                    `Publisher error: ${event?.message || "Unknown error"}`
-                );
-                reject(
-                    new Error(
-                        `WebSocket error: ${event?.message || "Unknown error"}`
+        // Create a new connection promise
+        this.pubConnectPromise = new Promise<void>((resolve, reject) => {
+            try {
+                // Build the query parameters from headers
+                const queryParams = Object.entries(this.headers)
+                    .map(
+                        ([key, value]) =>
+                            `${encodeURIComponent(key)}=${encodeURIComponent(
+                                value
+                            )}`
                     )
-                );
-            };
+                    .join("&");
+
+                // Create the WebSocket connection
+                // Note: The server expects a POST method for WebSocket upgrade
+                // Standard WebSocket creates a GET request, so we need to ensure our URL is precisely what the server expects
+                const url = `${this.getWebSocketBaseUrl()}/pub-ws?channel=${encodeURIComponent(
+                    this.channel
+                )}&${queryParams}`;
+
+                // In both browser and Node.js environments, we need to use standard WebSocket initialization
+                // The server has been modified to accept both GET and POST for WebSocket upgrades
+                this.pubSocket = new WebSocketImpl(url);
+
+                // Log connection attempt
+                this.logDebug(`Attempting to connect publisher to ${url}`);
+
+                if (!this.pubSocket) {
+                    this.updatePublisherState(ConnectionState.ERROR);
+                    reject(new Error("Failed to create publisher WebSocket"));
+                    return;
+                }
+
+                // Set up event handlers
+                this.pubSocket.onopen = () => {
+                    this.updatePublisherState(ConnectionState.CONNECTED);
+                    this.pubReconnectAttempts = 0;
+                    this.logDebug("Publisher connected");
+                    resolve();
+                    // Clear connection promise after successful connection
+                    this.pubConnectPromise = null;
+                };
+
+                this.pubSocket.onclose = (event: any) => {
+                    const wasConnected =
+                        this.pubState === ConnectionState.CONNECTED;
+                    this.updatePublisherState(ConnectionState.DISCONNECTED);
+                    this.logDebug(
+                        `Publisher disconnected: ${event?.code} ${event?.reason}`
+                    );
+
+                    // Clear connection promise
+                    this.pubConnectPromise = null;
+
+                    // Handle reconnection only if we're not deliberately disconnecting
+                    if (
+                        wasConnected &&
+                        this.autoReconnect &&
+                        !this.isDisconnecting
+                    ) {
+                        this.attemptReconnectPublisher();
+                    }
+                    if (!wasConnected) {
+                        reject(
+                            new Error(
+                                `WebSocket error: ${event?.message || "Denied"}`
+                            )
+                        );
+                    }
+                };
+
+                this.pubSocket.onerror = (event: any) => {
+                    this.updatePublisherState(ConnectionState.ERROR);
+                    this.logDebug(
+                        `Publisher error: ${event?.message || "Unknown error"}`
+                    );
+
+                    // Don't reject if we've already connected (the error might be after connection)
+                    if (this.pubState !== ConnectionState.CONNECTED) {
+                        reject(
+                            new Error(
+                                `WebSocket error: ${
+                                    event?.message || "Unknown error"
+                                }`
+                            )
+                        );
+                    }
+
+                    // Clear connection promise on terminal error
+                    this.pubConnectPromise = null;
+                };
+            } catch (error) {
+                // Clear connection promise on error
+                this.pubConnectPromise = null;
+                reject(error);
+            }
         });
+
+        return this.pubConnectPromise;
     }
 
     /**
@@ -237,137 +284,180 @@ export class McastClient {
      * @returns Promise that resolves when the connection is established
      */
     private async connectSubscriber(): Promise<void> {
+        // Return existing connection promise if one is in progress
+        if (this.subConnectPromise) {
+            return this.subConnectPromise;
+        }
+
+        // Return immediately if already connected
         if (this.isSocketConnected(this.subSocket)) {
-            return;
+            return Promise.resolve();
+        }
+
+        // If we're disconnecting, don't try to connect
+        if (this.isDisconnecting) {
+            return Promise.reject(new Error("Client is disconnecting"));
         }
 
         this.updateSubscriberState(ConnectionState.CONNECTING);
 
-        // Build the query parameters from headers
-        let queryParams = Object.entries(this.headers)
-            .map(
-                ([key, value]) =>
-                    `${encodeURIComponent(key)}=${encodeURIComponent(value)}`
-            )
-            .join("&");
-
-        // Optionally topics filtered on server
-        if (this.rootTopics.length > 0) {
-            queryParams += `&topics=${this.rootTopics
-                .map((topic) => encodeURIComponent(topic))
-                .join(",")}`;
-        }
-
-        // Create the WebSocket connection
-        // Note: The server expects a POST method for WebSocket upgrade
-        // Standard WebSocket creates a GET request, so we need to ensure our URL is precisely what the server expects
-        const url = `${this.getWebSocketBaseUrl()}/sub?channel=${encodeURIComponent(
-            this.channel
-        )}&${queryParams}`;
-
-        // In both browser and Node.js environments, we need to use standard WebSocket initialization
-        // The server has been modified to accept both GET and POST for WebSocket upgrades
-        this.subSocket = new WebSocketImpl(url);
-
-        // Log connection attempt
-        this.logDebug(`Attempting to connect subscriber to ${url}`);
-
-        return new Promise<void>((resolve, reject) => {
-            if (!this.subSocket) {
-                this.updateSubscriberState(ConnectionState.ERROR);
-                reject(new Error("Failed to create subscriber WebSocket"));
-                return;
-            }
-
-            // Set up event handlers
-            this.subSocket.onopen = () => {
-                this.updateSubscriberState(ConnectionState.CONNECTED);
-                this.subReconnectAttempts = 0;
-                this.logDebug("Subscriber connected");
-                resolve();
-            };
-
-            this.subSocket.onclose = (event: any) => {
-                const wasConnected =
-                    this.subState === ConnectionState.CONNECTED;
-                this.updateSubscriberState(ConnectionState.DISCONNECTED);
-                this.logDebug(
-                    `Subscriber disconnected: ${event?.code} ${event?.reason}`
-                );
-
-                // Handle reconnection
-                if (wasConnected && this.autoReconnect) {
-                    this.attemptReconnectSubscriber();
-                }
-
-                if (!wasConnected) {
-                    reject(
-                        new Error(
-                            `WebSocket error: ${event?.message || "Denied"}`
-                        )
-                    );
-                }
-            };
-
-            this.subSocket.onerror = (event: any) => {
-                this.updateSubscriberState(ConnectionState.ERROR);
-                this.logDebug(
-                    `Subscriber error: ${event?.message || "Unknown error"}`
-                );
-                reject(
-                    new Error(
-                        `WebSocket error: ${event?.message || "Unknown error"}`
+        // Create a new connection promise
+        this.subConnectPromise = new Promise<void>((resolve, reject) => {
+            try {
+                // Build the query parameters from headers
+                let queryParams = Object.entries(this.headers)
+                    .map(
+                        ([key, value]) =>
+                            `${encodeURIComponent(key)}=${encodeURIComponent(
+                                value
+                            )}`
                     )
-                );
-            };
+                    .join("&");
 
-            // Set up message handler
-            this.subSocket.onmessage = (event: any) => {
-                try {
-                    const message: SerializedMessage = JSON.parse(
-                        event.data.toString()
+                // Optionally topics filtered on server
+                if (this.rootTopics.length > 0) {
+                    queryParams += `&topics=${this.rootTopics
+                        .map((topic) => encodeURIComponent(topic))
+                        .join(",")}`;
+                }
+
+                // Create the WebSocket connection
+                // Note: The server expects a POST method for WebSocket upgrade
+                // Standard WebSocket creates a GET request, so we need to ensure our URL is precisely what the server expects
+                const url = `${this.getWebSocketBaseUrl()}/sub?channel=${encodeURIComponent(
+                    this.channel
+                )}&${queryParams}`;
+
+                // In both browser and Node.js environments, we need to use standard WebSocket initialization
+                // The server has been modified to accept both GET and POST for WebSocket upgrades
+                this.subSocket = new WebSocketImpl(url);
+
+                // Log connection attempt
+                this.logDebug(`Attempting to connect subscriber to ${url}`);
+
+                if (!this.subSocket) {
+                    this.updateSubscriberState(ConnectionState.ERROR);
+                    reject(new Error("Failed to create subscriber WebSocket"));
+                    return;
+                }
+
+                // Set up event handlers
+                this.subSocket.onopen = () => {
+                    this.updateSubscriberState(ConnectionState.CONNECTED);
+                    this.subReconnectAttempts = 0;
+                    this.logDebug("Subscriber connected");
+                    resolve();
+                    // Clear connection promise after successful connection
+                    this.subConnectPromise = null;
+                };
+
+                this.subSocket.onclose = (event: any) => {
+                    const wasConnected =
+                        this.subState === ConnectionState.CONNECTED;
+                    this.updateSubscriberState(ConnectionState.DISCONNECTED);
+                    this.logDebug(
+                        `Subscriber disconnected: ${event?.code} ${event?.reason}`
                     );
 
-                    const listeners: Array<MessageCallback> = [
-                        ...(this.listeners[message.topic] ?? []),
-                        ...(this.listeners[TOPIC_ALL] ?? []),
-                    ];
+                    // Clear connection promise
+                    this.subConnectPromise = null;
 
-                    if (listeners && listeners.length > 0) {
-                        let parsedPayload: Record<string, any>;
-                        try {
-                            parsedPayload = JSON.parse(message.payload);
-                        } catch (error) {
-                            this.logDebug(
-                                `Failed to parse message payload: ${error}`
-                            );
-                            return;
-                        }
+                    // Handle reconnection only if we're not deliberately disconnecting
+                    if (
+                        wasConnected &&
+                        this.autoReconnect &&
+                        !this.isDisconnecting
+                    ) {
+                        this.attemptReconnectSubscriber();
+                    }
 
-                        listeners.forEach((callback) => {
+                    if (!wasConnected) {
+                        reject(
+                            new Error(
+                                `WebSocket error: ${event?.message || "Denied"}`
+                            )
+                        );
+                    }
+                };
+
+                this.subSocket.onerror = (event: any) => {
+                    this.updateSubscriberState(ConnectionState.ERROR);
+                    this.logDebug(
+                        `Subscriber error: ${event?.message || "Unknown error"}`
+                    );
+
+                    // Don't reject if we've already connected (the error might be after connection)
+                    if (this.subState !== ConnectionState.CONNECTED) {
+                        reject(
+                            new Error(
+                                `WebSocket error: ${
+                                    event?.message || "Unknown error"
+                                }`
+                            )
+                        );
+                    }
+
+                    // Clear connection promise on terminal error
+                    this.subConnectPromise = null;
+                };
+
+                // Set up message handler
+                this.subSocket.onmessage = (event: any) => {
+                    try {
+                        const message: SerializedMessage = JSON.parse(
+                            event.data.toString()
+                        );
+
+                        const listeners: Array<MessageCallback> = [
+                            ...(this.listeners[message.topic] ?? []),
+                            ...(this.listeners[TOPIC_ALL] ?? []),
+                        ];
+
+                        if (listeners && listeners.length > 0) {
+                            let parsedPayload: Record<string, any>;
                             try {
-                                callback(message.topic, parsedPayload);
+                                parsedPayload = JSON.parse(message.payload);
                             } catch (error) {
                                 this.logDebug(
-                                    `Error in message callback: ${error}`
+                                    `Failed to parse message payload: ${error}`
                                 );
+                                return;
                             }
-                        });
+
+                            listeners.forEach((callback) => {
+                                try {
+                                    callback(message.topic, parsedPayload);
+                                } catch (error) {
+                                    this.logDebug(
+                                        `Error in message callback: ${error}`
+                                    );
+                                }
+                            });
+                        }
+                    } catch (error) {
+                        this.logDebug(
+                            `Error processing WebSocket message: ${error}`
+                        );
                     }
-                } catch (error) {
-                    this.logDebug(
-                        `Error processing WebSocket message: ${error}`
-                    );
-                }
-            };
+                };
+            } catch (error) {
+                // Clear connection promise on error
+                this.subConnectPromise = null;
+                reject(error);
+            }
         });
+
+        return this.subConnectPromise;
     }
 
     /**
      * Attempts to reconnect the publisher socket
      */
     private attemptReconnectPublisher(): void {
-        if (this.pubReconnectAttempts >= this.maxReconnectAttempts) {
+        if (
+            this.pubReconnectAttempts >= this.maxReconnectAttempts ||
+            this.isDisconnecting
+        ) {
             this.logDebug(
                 `Max publisher reconnect attempts (${this.maxReconnectAttempts}) reached, giving up`
             );
@@ -382,10 +472,14 @@ export class McastClient {
         );
 
         setTimeout(() => {
-            this.connectPublisher().catch((err) => {
-                this.logDebug(`Failed to reconnect publisher: ${err.message}`);
-                this.attemptReconnectPublisher();
-            });
+            if (!this.isDisconnecting) {
+                this.connectPublisher().catch((err) => {
+                    this.logDebug(
+                        `Failed to reconnect publisher: ${err.message}`
+                    );
+                    this.attemptReconnectPublisher();
+                });
+            }
         }, this.reconnectDelay);
     }
 
@@ -393,7 +487,10 @@ export class McastClient {
      * Attempts to reconnect the subscriber socket
      */
     private attemptReconnectSubscriber(): void {
-        if (this.subReconnectAttempts >= this.maxReconnectAttempts) {
+        if (
+            this.subReconnectAttempts >= this.maxReconnectAttempts ||
+            this.isDisconnecting
+        ) {
             this.logDebug(
                 `Max subscriber reconnect attempts (${this.maxReconnectAttempts}) reached, giving up`
             );
@@ -408,10 +505,14 @@ export class McastClient {
         );
 
         setTimeout(() => {
-            this.connectSubscriber().catch((err) => {
-                this.logDebug(`Failed to reconnect subscriber: ${err.message}`);
-                this.attemptReconnectSubscriber();
-            });
+            if (!this.isDisconnecting) {
+                this.connectSubscriber().catch((err) => {
+                    this.logDebug(
+                        `Failed to reconnect subscriber: ${err.message}`
+                    );
+                    this.attemptReconnectSubscriber();
+                });
+            }
         }, this.reconnectDelay);
     }
 
@@ -571,21 +672,98 @@ export class McastClient {
 
     /**
      * Disconnects from the server
+     *
+     * @returns Promise that resolves when disconnection is complete
      */
-    disconnect(): void {
-        // Close publisher socket
+    async disconnect(): Promise<void> {
+        // Mark client as disconnecting to prevent reconnection attempts
+        this.isDisconnecting = true;
+
+        // Close publisher socket with a proper close code
         if (this.pubSocket) {
             this.updatePublisherState(ConnectionState.DISCONNECTED);
-            this.pubSocket.close();
+
+            const pubSocketClosed = new Promise<void>((resolve) => {
+                // Add one-time close event listener
+                if (this.pubSocket) {
+                    const onClose = () => {
+                        this.pubSocket?.removeEventListener("close", onClose);
+                        resolve();
+                    };
+                    this.pubSocket.addEventListener("close", onClose);
+
+                    // Force close after timeout
+                    setTimeout(() => {
+                        if (this.pubSocket) {
+                            this.logDebug(
+                                "Publisher socket didn't close properly, forcing null"
+                            );
+                            this.pubSocket = null;
+                        }
+                        resolve();
+                    }, 1000);
+                } else {
+                    resolve();
+                }
+
+                // Attempt clean close
+                try {
+                    this.pubSocket?.close(1000, "Client disconnected");
+                } catch (err) {
+                    this.logDebug(`Error closing publisher socket: ${err}`);
+                    this.pubSocket = null;
+                    resolve();
+                }
+            });
+
+            await pubSocketClosed;
             this.pubSocket = null;
         }
 
-        // Close subscriber socket
+        // Close subscriber socket with a proper close code
         if (this.subSocket) {
             this.updateSubscriberState(ConnectionState.DISCONNECTED);
-            this.subSocket.close();
+
+            const subSocketClosed = new Promise<void>((resolve) => {
+                // Add one-time close event listener
+                if (this.subSocket) {
+                    const onClose = () => {
+                        this.subSocket?.removeEventListener("close", onClose);
+                        resolve();
+                    };
+                    this.subSocket.addEventListener("close", onClose);
+
+                    // Force close after timeout
+                    setTimeout(() => {
+                        if (this.subSocket) {
+                            this.logDebug(
+                                "Subscriber socket didn't close properly, forcing null"
+                            );
+                            this.subSocket = null;
+                        }
+                        resolve();
+                    }, 1000);
+                } else {
+                    resolve();
+                }
+
+                // Attempt clean close
+                try {
+                    this.subSocket?.close(1000, "Client disconnected");
+                } catch (err) {
+                    this.logDebug(`Error closing subscriber socket: ${err}`);
+                    this.subSocket = null;
+                    resolve();
+                }
+            });
+
+            await subSocketClosed;
             this.subSocket = null;
         }
+
+        // Clear all connection promises
+        this.pubConnectPromise = null;
+        this.subConnectPromise = null;
 
         this.logDebug("Disconnected from server");
     }

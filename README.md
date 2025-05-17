@@ -45,7 +45,7 @@ await client.publish("updates", {
 });
 
 // When done, clean up
-client.disconnect();
+await client.disconnect();
 ```
 
 ### Features
@@ -56,6 +56,8 @@ client.disconnect();
 -   Topic-based publish/subscribe
 -   HTTP fallback for publishing
 -   Browser and Node.js support
+-   Thread-safe with race condition protection
+-   Reliable clean disconnection
 
 ## API Reference
 
@@ -137,10 +139,10 @@ Parameters:
 
 ##### disconnect()
 
-Closes all WebSocket connections.
+Closes all WebSocket connections and ensures proper cleanup. Returns a promise that resolves when disconnection is complete.
 
 ```typescript
-disconnect(): void
+async disconnect(): Promise<void>
 ```
 
 ##### onStateChange(listener)
@@ -249,6 +251,25 @@ export interface AccountResponse {
 ## Error Handling
 
 The client methods that establish connections (`subscribe`, `publish`) are async functions that throw errors when connection fails. You should wrap calls in try/catch blocks to handle potential errors.
+
+## Multi-threading Safety
+
+The client is designed to be safe for use with multiple concurrent async operations. It uses internal locks to prevent race conditions when multiple processes attempt to connect, publish, or subscribe simultaneously.
+
+## Cleanup and Disconnection
+
+The `disconnect()` method now returns a Promise that resolves when all connections are properly closed. This ensures that sockets are properly cleaned up, especially important when dealing with error scenarios.
+
+```typescript
+try {
+    // Use the client...
+} catch (error) {
+    console.error("Error:", error);
+} finally {
+    // Wait for proper cleanup
+    await client.disconnect();
+}
+```
 
 ## Environment Variables
 
