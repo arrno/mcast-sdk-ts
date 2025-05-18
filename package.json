@@ -1,6 +1,6 @@
 {
   "name": "mcast-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "WebSocket client for Mcast real-time messaging",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
