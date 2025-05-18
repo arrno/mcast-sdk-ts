@@ -81,6 +81,7 @@ export interface SerializedMessage {
  * Connection states for WebSocket connections
  */
 export enum ConnectionState {
+    DISCONNECTING = "disconnecting",
     DISCONNECTED = "disconnected",
     CONNECTING = "connecting",
     CONNECTED = "connected",

@@ -201,6 +201,7 @@ An enum representing the possible connection states:
 
 ```typescript
 enum ConnectionState {
+    DISCONNECTING = "disconnecting",
     DISCONNECTED = "disconnected",
     CONNECTING = "connecting",
     CONNECTED = "connected",
@@ -285,8 +286,8 @@ const client = new McastClient(config);
 
 Supported environment variables:
 
-| Variable                       | Description                              | Required | Default |
-| ------------------------------ | ---------------------------------------- | -------- | ------- |
+| Variable                     | Description                              | Required | Default |
+| ---------------------------- | ---------------------------------------- | -------- | ------- |
 | MCAST_AUTH_TOKEN             | Authentication token                     | Yes      | -       |
 | MCAST_CHANNEL                | Channel name                             | Yes      | -       |
 | MCAST_DEBUG                  | Enable debug logging                     | No       | false   |

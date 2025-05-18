@@ -681,7 +681,7 @@ export class McastClient {
 
         // Close publisher socket with a proper close code
         if (this.pubSocket) {
-            this.updatePublisherState(ConnectionState.DISCONNECTED);
+            this.updatePublisherState(ConnectionState.DISCONNECTING);
 
             const pubSocketClosed = new Promise<void>((resolve) => {
                 // Add one-time close event listener
@@ -722,7 +722,7 @@ export class McastClient {
 
         // Close subscriber socket with a proper close code
         if (this.subSocket) {
-            this.updateSubscriberState(ConnectionState.DISCONNECTED);
+            this.updateSubscriberState(ConnectionState.DISCONNECTING);
 
             const subSocketClosed = new Promise<void>((resolve) => {
                 // Add one-time close event listener
